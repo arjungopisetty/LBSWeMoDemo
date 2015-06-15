@@ -3,29 +3,30 @@ package com.corning.helloworld;
 import android.content.Intent;
 import android.location.Location;
 import android.location.LocationListener;
-import android.support.v7.app.ActionBarActivity;
 import android.os.Bundle;
+import android.support.v7.app.ActionBarActivity;
 import android.util.Log;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import com.google.android.gms.maps.CameraUpdateFactory;
-import com.google.android.gms.maps.SupportMapFragment;
-import com.google.android.gms.maps.model.CameraPosition;
-import com.google.android.gms.maps.model.LatLng;
-import com.google.android.gms.maps.model.MarkerOptions;
+import com.belkin.wemo.localsdk.WeMoDevice;
+import com.belkin.wemo.localsdk.WeMoSDKContext;
+import com.belkin.wemo.localsdk.WeMoSDKContext.NotificationListener;
 import com.mexens.android.navizon.NavizonIndoorsSettings;
 import com.mexens.android.navizon.NavizonLocationManager;
 
+import java.util.ArrayList;
 
-public class DisplayMap extends ActionBarActivity implements LocationListener {
+
+public class DisplayMap extends ActionBarActivity implements LocationListener, NotificationListener {
+
+    public static final String TAG = DisplayMap.class.getSimpleName();
 
     private MapSurfaceView mMap;
     private NavizonLocationManager nlm = null;
-    private static final String TAG = "NavizonSDKTest";
-    private int updateCount = 0;
+    private int updateCount = 1;
 
     double originX = -77.12428;//-77.124275;//-77.12426; - Lower --> Right, Higher --> Left
 
@@ -37,6 +38,14 @@ public class DisplayMap extends ActionBarActivity implements LocationListener {
 
     private static final double HEADING_OFFSET = 90.0;
 
+    // WeMo Insight Switch fields
+    private WeMoSDKContext mWeMoSDKContext;
+    private ArrayList<WeMoDevice> mWeMoDevices;
+
+    private double mUpperBound = 0; // Upper geofence bound
+    private double mLowerBound = 0; // Lower geofence bound
+    private double mLeftBound = 0; // Leftmost geofence bound
+    private double mRightBound = 0; // Rightmost geofence bound
 
     /**
      * Your Navizon Indoors username
@@ -56,7 +65,7 @@ public class DisplayMap extends ActionBarActivity implements LocationListener {
      * set of available levels in order to make it easier for the server to find the correct level.
      * A list of levelIDs separated by spaces as string.
      */
-    private final String levelID = "0";
+    private final String levelID = "1";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -132,14 +141,18 @@ public class DisplayMap extends ActionBarActivity implements LocationListener {
         Log.d(TAG, "Version " + nlm.getVersion());
 
         nlm.requestLocationUpdates(
-                NavizonLocationManager.INDOORS_PROVIDER_NAVIGATION,			// or INDOORS_PROVIDER_TRACKING
-                0, 															// dummy for compatibility to Core Location
-                0,															// dummy for compatibility to Core Location
+                NavizonLocationManager.INDOORS_PROVIDER_NAVIGATION,            // or INDOORS_PROVIDER_TRACKING
+                0,                                                            // dummy for compatibility to Core Location
+                0,                                                            // dummy for compatibility to Core Location
                 this);
 
         updateCount = 0;
 
         mMap.RenderSurface(1.0, 1.0);
+
+        mWeMoSDKContext = new WeMoSDKContext(getApplicationContext());
+        mWeMoSDKContext.addNotificationListener(this);
+        mWeMoDevices = new ArrayList<>();
     }
 
 
@@ -265,6 +278,16 @@ public class DisplayMap extends ActionBarActivity implements LocationListener {
 
         //txtDistance.setText(String.format("Distance: %.2f, Angle: %.1f", distance, angle));
 
+        if ((y < mUpperBound && y > mLowerBound) &&
+                (x < mRightBound && x > mLeftBound)) {
+            // For the demo, there should only be one WeMo device
+            WeMoDevice device = mWeMoDevices.get(0);
+            if (device != null && !device.getState().equals(WeMoDevice.WEMO_DEVICE_ON)) {
+                mWeMoSDKContext.setDeviceState(WeMoDevice.WEMO_DEVICE_ON, device.getUDN());
+
+                Toast.makeText(this, "WeMo Device ON", Toast.LENGTH_SHORT);
+            }
+        }
     }
 
     public static float distFrom(double lat1, double lng1, double lat2, double lng2) {
@@ -315,6 +338,23 @@ public class DisplayMap extends ActionBarActivity implements LocationListener {
 
     }
 
+    /**
+     * Updates the list of WeMoDevices in WeMoSDKContext
+     */
+    private void refresh() {
+        mWeMoSDKContext.refreshListOfWeMoDevicesOnLAN();
+    }
+
+    /**
+     * Refresh the list of found devices on first launch
+     * and on coming into foreground
+     */
+    @Override
+    protected void onStart() {
+        refresh();
+        super.onStart();
+    }
+
     @Override
     public void onPause() {
         super.onPause();
@@ -335,10 +375,38 @@ public class DisplayMap extends ActionBarActivity implements LocationListener {
 
     @Override
     protected void onDestroy() {
-        super.onDestroy();
+        mWeMoSDKContext.stop();
         if (nlm != null) {
             nlm.removeUpdates(this);
             nlm = null;
+        }
+        super.onDestroy();
+    }
+
+    @Override
+    public void onNotify(String event, String udn) {
+        WeMoDevice wemoDevice = mWeMoSDKContext.getWeMoDeviceByUDN(udn);
+
+        if (event.equals(WeMoSDKContext.REFRESH_LIST)) {
+            ArrayList<String> udns = mWeMoSDKContext.getListOfWeMoDevicesOnLAN();
+            mWeMoDevices = new ArrayList<WeMoDevice>();
+
+            for (String deviceUdn : udns) {
+                WeMoDevice listDevice = mWeMoSDKContext.getWeMoDeviceByUDN(deviceUdn);
+                if (listDevice != null && listDevice.isAvailable()) {
+                    mWeMoDevices.add(listDevice);
+                }
+            }
+        } else if (wemoDevice == null) {
+            //do nothing because of incorrect notification
+        } else if (event.equals(WeMoSDKContext.ADD_DEVICE)) {
+            Toast.makeText(getApplicationContext(),
+                    "Added " + wemoDevice.getFriendlyName(),
+                    Toast.LENGTH_SHORT).show();
+        } else if (event.equals(WeMoSDKContext.REMOVE_DEVICE)) {
+            Toast.makeText(getApplicationContext(),
+                    "Removed " + wemoDevice.getFriendlyName(),
+                    Toast.LENGTH_SHORT).show();
         }
     }
 }
